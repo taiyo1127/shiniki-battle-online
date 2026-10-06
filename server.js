@@ -1,123 +1,25 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const WebSocket = require("ws");
-
-const PORT = process.env.PORT || 3000;
-const index = fs.readFileSync(path.join(__dirname, "index.html"));
-
-const httpServer = http.createServer((req, res) => {
-  if (req.url === "/" || req.url === "/index.html") {
-    res.writeHead(200, {"Content-Type": "text/html; charset=utf-8"});
-    res.end(index);
-    return;
-  }
-  res.writeHead(404);
-  res.end("Not Found");
-});
-
-const wss = new WebSocket.Server({ server: httpServer });
-const rooms = new Map();
-
-function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
-}
-
-function broadcast(room, data) {
-  room.players.forEach(p => send(p, data));
-}
-
-wss.on("connection", ws => {
-  ws.on("message", raw => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-
-    if (msg.type === "join") {
-      const code = String(msg.room || "").trim().toUpperCase();
-      if (!code) return send(ws, {type:"error", message:"ルームコードを入力してください"});
-      let room = rooms.get(code);
-      if (!room) {
-        room = { players: [], state: null };
-        rooms.set(code, room);
-      }
-      if (room.players.length >= 2) {
-        return send(ws, {type:"error", message:"この部屋は満員です"});
-      }
-
-      room.players.push(ws);
-      ws.room = code;
-      ws.playerIndex = room.players.length - 1;
-
-      send(ws, {type:"joined", playerIndex: ws.playerIndex, count: room.players.length});
-      broadcast(room, {type:"players", count: room.players.length});
-
-      if (room.players.length === 2) {
-        room.state = {
-          hp: [100, 100],
-          mp: [5, 5],
-          turn: 0,
-          log: ["対戦開始！"],
-          winner: null
-        };
-        broadcast(room, {type:"state", state: room.state});
-      }
-      return;
-    }
-
-    if (!ws.room) return;
-    const room = rooms.get(ws.room);
-    if (!room) return;
-
-    if (msg.type === "action" && room.players.length === 2 && room.state && room.state.winner === null) {
-      const s = room.state;
-      const p = ws.playerIndex;
-      if (s.turn !== p) return;
-
-      const action = msg.action;
-      const enemy = 1 - p;
-      let text = "";
-
-      if (action === "attack") {
-        const dmg = 12;
-        s.hp[enemy] = Math.max(0, s.hp[enemy] - dmg);
-        text = `プレイヤー${p+1}の攻撃！ ${dmg}ダメージ`;
-      } else if (action === "magic") {
-        if (s.mp[p] < 2) return send(ws, {type:"error", message:"MPが足りません"});
-        s.mp[p] -= 2;
-        const dmg = 22;
-        s.hp[enemy] = Math.max(0, s.hp[enemy] - dmg);
-        text = `プレイヤー${p+1}の魔法！ ${dmg}ダメージ`;
-      } else if (action === "heal") {
-        if (s.mp[p] < 2) return send(ws, {type:"error", message:"MPが足りません"});
-        s.mp[p] -= 2;
-        s.hp[p] = Math.min(100, s.hp[p] + 18);
-        text = `プレイヤー${p+1}の回復！ HP+18`;
-      } else {
-        return;
-      }
-
-      s.log.push(text);
-      if (s.hp[enemy] <= 0) {
-        s.winner = p;
-        s.log.push(`プレイヤー${p+1}の勝利！`);
-      } else {
-        s.turn = enemy;
-      }
-      broadcast(room, {type:"state", state:s});
-    }
-  });
-
-  ws.on("close", () => {
-    const code = ws.room;
-    if (!code) return;
-    const room = rooms.get(code);
-    if (!room) return;
-    room.players = room.players.filter(p => p !== ws);
-    if (room.players.length === 0) rooms.delete(code);
-    else broadcast(room, {type:"players", count: room.players.length});
-  });
-});
-
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
-});
+const http=require('http'),fs=require('fs'),path=require('path'),{WebSocketServer}=require('ws');
+const PORT=process.env.PORT||3000; const rooms=new Map();
+const server=http.createServer((req,res)=>{let p=req.url==='/'?'/index.html':req.url; let f=path.join(__dirname,p); if(!f.startsWith(__dirname)||!fs.existsSync(f)){res.writeHead(404);return res.end('Not found')} res.writeHead(200,{'Content-Type':f.endsWith('.html')?'text/html; charset=utf-8':'text/plain'});res.end(fs.readFileSync(f));});
+const wss=new WebSocketServer({server});
+const cards=[
+['炎剣フレア','weapon',4,18,'fire'],['雷槍ボルト','weapon',5,21,'thunder'],['氷刃フロスト','weapon',4,16,'ice'],['聖弓ルミナ','weapon',6,24,'light'],['黒鎌ナイトメア','weapon',7,28,'dark'],['毒爪ヴェノム','weapon',3,13,'poison'],
+['鉄壁シールド','armor',3,10],['炎竜の盾','armor',5,14],['氷晶の鎧','armor',4,12],['闇衣カース','armor',5,9],
+['火球','spell',3,20,'fire'],['雷撃','spell',4,24,'thunder'],['氷結','spell',3,14,'ice'],['聖光','spell',5,28,'light'],['暗黒弾','spell',5,30,'dark'],['毒霧','spell',3,10,'poison'],
+['大回復','heal',4,28],['応急手当','heal',2,14],['魔力転換','heal',0,0],['吸血','spell',4,16,'dark'],
+['カウンター','special',3,0],['強奪','special',2,0],['破壊','special',5,0],['二連撃','special',5,0],['神の加護','special',4,0],['浄化','special',2,0]
+];
+function deck(){let d=[];for(let i=0;i<3;i++)for(const c of cards)d.push(c);return d.sort(()=>Math.random()-.5)}
+function player(){return {hp:100,maxHp:100,mp:12,maxMp:20,hand:[],weapon:null,armor:null,shield:0,guard:false,counter:false,used:false}}
+function send(ws,x){if(ws.readyState===1)ws.send(JSON.stringify(x))} function broadcast(r,x){r.players.forEach(p=>send(p.ws,x))}
+function state(r){return r.players.map((p,i)=>({hp:p.hp,maxHp:p.maxHp,mp:p.mp,hand:p.hand.map((c,j)=>({i:j,name:c[0],type:c[1],cost:c[2],power:c[3],attr:c[4]})),weapon:p.weapon?{name:p.weapon[0],power:p.weapon[3]}:null,armor:p.armor?{name:p.armor[0],power:p.armor[3]}:null,shield:p.shield,guard:p.guard,counter:p.counter}))}
+function pub(r,msg=''){broadcast(r,{type:'state',turn:r.turn,state:state(r),log:r.log.slice(-8),msg});}
+function draw(p,n=1){while(n--&&p.deck?.length)p.hand.push(p.deck.pop())}
+function setup(r){r.players.forEach(p=>{Object.assign(p,player());p.deck=deck();draw(p,6)});r.turn=0;r.log=['対戦開始！先攻プレイヤーのターン'];pub(r)}
+function dmg(r,a,b,n,kind){let reduced=0;if(b.guard){reduced=Math.floor(n*.5);b.guard=false} if(b.armor&&kind==='attack')reduced+=Math.min(n,Math.floor(b.armor[3]*.35));n=Math.max(0,n-reduced);b.hp=Math.max(0,b.hp-n);r.log.push(`${kind==='spell'?'魔法':'攻撃'}で ${n} ダメージ！${reduced?`（${reduced}軽減）`:''}`);if(b.counter){b.counter=false;let c=Math.floor(n*.4);a.hp=Math.max(0,a.hp-c);r.log.push(`カウンターで${c}ダメージ！`)}}
+function act(r,idx,data){if(idx!==r.turn)return;let a=r.players[idx],b=r.players[1-idx];if(a.hp<=0)return;let c=a.hand[data.card];if(data.type==='guard'){a.guard=true;r.log.push(`P${idx+1}は防御態勢！`);end(r);return} if(data.type==='draw'){draw(a,2);r.log.push(`P${idx+1}は2枚ドロー！`);end(r);return} if(!c)return;let cost=c[2];if(a.mp<cost){send(a.ws,{type:'error',msg:'MPが足りない'});return}a.mp-=cost;a.hand.splice(data.card,1);switch(c[1]){case'weapon':a.weapon=c;r.log.push(`P${idx+1}は${c[0]}を装備！`);break;case'armor':a.armor=c;r.log.push(`P${idx+1}は${c[0]}を装備！`);break;case'spell':{let n=c[3]+Math.floor(Math.random()*7)-3;dmg(r,a,b,n,'spell');if(c[4]==='ice')b.guard=true;if(c[4]==='poison'){b.hp=Math.max(0,b.hp-5);r.log.push('毒で5追加ダメージ！')}if(c[4]==='dark')a.hp=Math.min(a.maxHp,a.hp+Math.floor(n*.35));break}case'heal':if(c[0]==='魔力転換'){a.mp=Math.min(a.maxMp,a.mp+10);r.log.push('MPを10回復！')}else{a.hp=Math.min(a.maxHp,a.hp+c[3]);r.log.push(`${c[0]}でHPを${c[3]}回復！`)}break;case'special':if(c[0]==='カウンター'){a.counter=true;r.log.push('カウンターを構えた！')}else if(c[0]==='強奪'){let k=Math.floor(Math.random()*b.hand.length);if(b.hand[k]){a.hand.push(b.hand.splice(k,1)[0]);r.log.push('相手のカードを1枚奪った！')}}else if(c[0]==='破壊'){b.weapon=null;r.log.push('相手の武器を破壊！')}else if(c[0]==='二連撃'){let n=(a.weapon?a.weapon[3]:10);dmg(r,a,b,n,'attack');dmg(r,a,b,n,'attack')}else if(c[0]==='神の加護'){a.hp=Math.min(a.maxHp,a.hp+18);a.mp=Math.min(a.maxMp,a.mp+6);a.guard=true;r.log.push('神の加護！HP+18 MP+6 防御')}else if(c[0]==='浄化'){b.guard=false;b.counter=false;r.log.push('相手の防御効果を解除！')}break}
+if(a.weapon&&Math.random()<.15){r.log.push(`${a.weapon[0]}の追加効果！`);dmg(r,a,b,5,'attack')} end(r)}
+function attack(r,idx){let a=r.players[idx],b=r.players[1-idx];if(idx!==r.turn||a.mp<1)return;if(!a.weapon){send(a.ws,{type:'error',msg:'武器を装備してください'});return}a.mp--;dmg(r,a,b,a.weapon[3]+Math.floor(Math.random()*5)-2,'attack');end(r)}
+function end(r){if(r.players[1].hp<=0||r.players[0].hp<=0){let w=r.players[0].hp>0?1:2;r.log.push(`🏆 P${w}の勝利！`);broadcast(r,{type:'state',turn:-1,state:state(r),log:r.log.slice(-10),msg:`P${w}の勝利！`});return}let p=r.players[r.turn];p.mp=Math.min(p.maxMp,p.mp+3);draw(p,1);p.used=false;r.turn=1-r.turn;r.log.push(`P${r.turn+1}のターン！`);pub(r)}
+wss.on('connection',ws=>{ws.on('message',raw=>{let m;try{m=JSON.parse(raw)}catch{return}if(m.action==='join'){let code=(m.room||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);if(!code)return;let r=rooms.get(code);if(!r){r={players:[],turn:0,log:[],code};rooms.set(code,r)}if(r.players.length>=2){send(ws,{type:'error',msg:'この部屋は満員です'});return}let p=player();p.ws=ws;r.players.push(p);send(ws,{type:'joined',index:r.players.length-1,code});if(r.players.length===2)setup(r);else send(ws,{type:'waiting',msg:'相手の参加を待っています…'});return}let r=[...rooms.values()].find(x=>x.players.some(p=>p.ws===ws));if(!r)return;let idx=r.players.findIndex(p=>p.ws===ws);if(m.action==='play')act(r,idx,m);else if(m.action==='attack')attack(r,idx);else if(m.action==='guard')act(r,idx,{type:'guard'});else if(m.action==='draw')act(r,idx,{type:'draw'})});ws.on('close',()=>{for(const [k,r] of rooms){let i=r.players.findIndex(p=>p.ws===ws);if(i>=0){r.players.splice(i,1);broadcast(r,{type:'error',msg:'相手が退出しました'});if(!r.players.length)rooms.delete(k);break}}})});
+server.listen(PORT,'0.0.0.0',()=>console.log(`ready on ${PORT}`));
