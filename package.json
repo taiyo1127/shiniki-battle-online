@@ -1,1 +1,1 @@
-{"name":"shiniki-battle-v2","version":"2.0.0","private":true,"scripts":{"start":"node server.js"},"dependencies":{"ws":"^8.18.0"}}
+{"name":"shiniki-battle-online","version":"3.0.0","private":true,"scripts":{"start":"node server.js"},"dependencies":{"ws":"^8.18.0"}}
